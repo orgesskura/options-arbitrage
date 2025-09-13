@@ -354,7 +354,7 @@ fn parse_okex_levels(levels: Vec<Vec<String>>) -> Vec<OrderLevel> {
     levels
         .into_iter()
         .filter_map(|l| {
-            if l.len() == 2 {
+            if l.len() >= 2 {
                 Some(OrderLevel {
                     price: l[0].parse().ok()?,
                     quantity: l[1].parse().ok()?,
@@ -378,7 +378,8 @@ fn parse_deribit_levels(levels: Vec<(f64, f64)>) -> Vec<OrderLevel> {
 
 #[derive(Deserialize, Debug)]
 struct OkexResponse {
-    data: Vec<OkexOrderBookData>,
+    // Assume I will only subscribe to 1 instrument
+    data: [OkexOrderBookData; 1],
 }
 
 #[derive(Deserialize, Debug)]
@@ -405,8 +406,12 @@ struct DeribitOrderBookData {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let okex_symbol = "BTC-USD-250913-120000-C";
-    let deribit_symbol = "BTC-10MAY24-66000-C";
+    let okex_symbol = "BTC-USD-251031-140000-P";
+    let deribit_symbol = "BTC-31OCT25-140000-P";
+
+    println!(
+        "Trying to find arbitrage between {okex_symbol} (Okex) and {deribit_symbol} (Deribit)"
+    );
 
     let (tx, mut rx) = mpsc::unbounded_channel::<OrderBookUpdate>();
 
