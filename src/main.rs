@@ -7,6 +7,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use utils::InstrumentValidator;
 
@@ -282,37 +283,81 @@ pub async fn okex_websocket_task(
     tx: mpsc::UnboundedSender<OrderBookUpdate>,
 ) -> Result<()> {
     let url = "wss://ws.okx.com:8443/ws/v5/public";
-    let (ws_stream, _) = connect_async(url).await?;
-    let (mut write, mut read) = ws_stream.split();
 
-    let subscribe_msg = serde_json::json!({
-        "op": "subscribe",
-        "args": [{"channel": "books", "instId": &symbol}]
-    });
-    write.send(Message::text(subscribe_msg.to_string())).await?;
-    println!("Okex connected");
+    let mut attempt: u32 = 0;
+    loop {
+        match connect_async(url).await {
+            Ok((ws_stream, _)) => {
+                attempt = 0; // reset after success
+                let (mut write, mut read) = ws_stream.split();
 
-    while let Some(msg) = read.next().await {
-        if let Ok(Message::Text(text)) = msg {
-            if let Ok(resp) = serde_json::from_str::<OkexResponse>(&text) {
-                if let Some(data) = resp.data.first() {
-                    let bids = parse_okex_levels(data.bids.clone());
-                    let asks = parse_okex_levels(data.asks.clone());
-                    let _ = tx.send(OrderBookUpdate::Bids {
-                        exchange: Exchange::Okex,
-                        symbol: symbol.clone(),
-                        levels: bids,
-                    });
-                    let _ = tx.send(OrderBookUpdate::Asks {
-                        exchange: Exchange::Okex,
-                        symbol: symbol.clone(),
-                        levels: asks,
-                    });
+                let subscribe_msg = serde_json::json!({
+                    "op": "subscribe",
+                    "args": [{"channel": "books", "instId": &symbol}]
+                });
+                if write
+                    .send(Message::text(subscribe_msg.to_string()))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                println!("Okex connected");
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            if let Ok(resp) = serde_json::from_str::<OkexResponse>(&text) {
+                                if let Some(data) = resp.data.first() {
+                                    let bids = parse_okex_levels(data.bids.clone());
+                                    let asks = parse_okex_levels(data.asks.clone());
+                                    let _ = tx.send(OrderBookUpdate::Bids {
+                                        exchange: Exchange::Okex,
+                                        symbol: symbol.clone(),
+                                        levels: bids,
+                                    });
+                                    let _ = tx.send(OrderBookUpdate::Asks {
+                                        exchange: Exchange::Okex,
+                                        symbol: symbol.clone(),
+                                        levels: asks,
+                                    });
+                                }
+                            }
+                        }
+                        Ok(Message::Close(frame)) => {
+                            let reason = frame
+                                .and_then(|f| Some(f.reason.to_string()))
+                                .unwrap_or_else(|| "Connection closed by server".to_string());
+                            let _ = tx.send(OrderBookUpdate::ConnectionError {
+                                exchange: Exchange::Okex,
+                                error: reason,
+                            });
+                            break;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(OrderBookUpdate::ConnectionError {
+                                exchange: Exchange::Okex,
+                                error: format!("Websocket error: {e}"),
+                            });
+                            break;
+                        }
+                        _ => {}
+                    }
                 }
             }
+            Err(e) => {
+                let _ = tx.send(OrderBookUpdate::ConnectionError {
+                    exchange: Exchange::Okex,
+                    error: format!("Failed to connect: {e}"),
+                });
+            }
         }
+
+        attempt += 1;
+        let backoff = (attempt.min(5)) * 5; // 5s, 10s, … max 25s
+        println!("Okex reconnecting in {backoff}s...");
+        sleep(Duration::from_secs(backoff.into())).await;
     }
-    Ok(())
 }
 
 pub async fn deribit_websocket_task(
@@ -320,37 +365,81 @@ pub async fn deribit_websocket_task(
     tx: mpsc::UnboundedSender<OrderBookUpdate>,
 ) -> Result<()> {
     let url = "wss://www.deribit.com/ws/api/v2";
-    let (ws_stream, _) = connect_async(url).await?;
-    let (mut write, mut read) = ws_stream.split();
 
-    let subscribe_msg = serde_json::json!({
-        "method": "public/subscribe",
-        "params": {"channels": [format!("book.{}.none.20.100ms", symbol)]},
-        "jsonrpc": "2.0",
-        "id": 0
-    });
-    write.send(Message::text(subscribe_msg.to_string())).await?;
-    println!("Deribit connected");
+    let mut attempt: u32 = 0;
+    loop {
+        match connect_async(url).await {
+            Ok((ws_stream, _)) => {
+                attempt = 0;
+                let (mut write, mut read) = ws_stream.split();
 
-    while let Some(msg) = read.next().await {
-        if let Ok(Message::Text(text)) = msg {
-            if let Ok(resp) = serde_json::from_str::<DeribitResponse>(&text) {
-                let bids = parse_deribit_levels(resp.params.data.bids);
-                let asks = parse_deribit_levels(resp.params.data.asks);
-                let _ = tx.send(OrderBookUpdate::Bids {
-                    exchange: Exchange::Deribit,
-                    symbol: symbol.clone(),
-                    levels: bids,
+                let subscribe_msg = serde_json::json!({
+                    "method": "public/subscribe",
+                    "params": {"channels": [format!("book.{}.none.20.100ms", symbol)]},
+                    "jsonrpc": "2.0",
+                    "id": 0
                 });
-                let _ = tx.send(OrderBookUpdate::Asks {
+                if write
+                    .send(Message::text(subscribe_msg.to_string()))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                println!("Deribit connected");
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            if let Ok(resp) = serde_json::from_str::<DeribitResponse>(&text) {
+                                let bids = parse_deribit_levels(resp.params.data.bids);
+                                let asks = parse_deribit_levels(resp.params.data.asks);
+                                let _ = tx.send(OrderBookUpdate::Bids {
+                                    exchange: Exchange::Deribit,
+                                    symbol: symbol.clone(),
+                                    levels: bids,
+                                });
+                                let _ = tx.send(OrderBookUpdate::Asks {
+                                    exchange: Exchange::Deribit,
+                                    symbol: symbol.clone(),
+                                    levels: asks,
+                                });
+                            }
+                        }
+                        Ok(Message::Close(frame)) => {
+                            let reason = frame
+                                .and_then(|f| Some(f.reason.to_string()))
+                                .unwrap_or_else(|| "Connection closed by server".to_string());
+                            let _ = tx.send(OrderBookUpdate::ConnectionError {
+                                exchange: Exchange::Deribit,
+                                error: reason,
+                            });
+                            break;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(OrderBookUpdate::ConnectionError {
+                                exchange: Exchange::Deribit,
+                                error: format!("Websocket error: {e}"),
+                            });
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(OrderBookUpdate::ConnectionError {
                     exchange: Exchange::Deribit,
-                    symbol: symbol.clone(),
-                    levels: asks,
+                    error: format!("Failed to connect: {e}"),
                 });
             }
         }
+
+        attempt += 1;
+        let backoff = (attempt.min(5)) * 5;
+        println!("Deribit reconnecting in {backoff}s...");
+        sleep(Duration::from_secs(backoff.into())).await;
     }
-    Ok(())
 }
 
 fn parse_okex_levels(levels: Vec<Vec<String>>) -> Vec<OrderLevel> {
@@ -432,8 +521,17 @@ async fn main() -> Result<()> {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<OrderBookUpdate>();
 
-    tokio::spawn(okex_websocket_task(okex_symbol.into(), tx.clone()));
-    tokio::spawn(deribit_websocket_task(deribit_symbol.into(), tx.clone()));
+    tokio::spawn({
+        let symbol = okex_symbol.to_string();
+        let tx = tx.clone();
+        async move { okex_websocket_task(symbol, tx).await }
+    });
+
+    tokio::spawn({
+        let symbol = deribit_symbol.to_string();
+        let tx = tx.clone();
+        async move { deribit_websocket_task(symbol, tx).await }
+    });
 
     let mut books = HashMap::new();
     let mut last_fingerprint = None;
