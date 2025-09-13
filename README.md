@@ -21,7 +21,7 @@ This project connects to **Okex** and **Deribit** websockets, builds live order 
 
 ## Running
 ```bash
-cargo run --release
+cargo run --release -- --okex-symbol=BTC-USD-251031-140000-P  --deribit-symbol=BTC-31OCT25-140000-P
 ```
 
 ## Testing
@@ -52,6 +52,10 @@ Total Profit: 1.0
 
 ## Potential Improvements
 - **Precision**: Use `Decimal` for prices and quantities directly in `OrderLevel` instead of `f64` to avoid float→decimal conversions.
+- **Detect out of sequence messages from websockets**
+- **Use config.toml to build params for exchange websockets**
+- **Serde zero copy for messages gotten from web-socket**
+- **Memory concern**: Do not use unbounded mpsc channels as memory can grow very fast if processing of messages can not keep up with the rate of incoming messages
 - **Order book state**: Clear/reset on reconnect to prevent stale data.
 - **Reconnect strategy**: Smarter exponential backoff with jitter rather than fixed steps.
 - **Websocket handling**: Explicitly manage ping/pong and subscription acknowledgment messages.
