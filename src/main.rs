@@ -1,3 +1,5 @@
+mod utils;
+
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use ordered_float::OrderedFloat;
@@ -6,6 +8,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use utils::InstrumentValidator;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrderLevel {
@@ -410,13 +413,27 @@ async fn main() -> Result<()> {
     let deribit_symbol = "BTC-31OCT25-140000-P";
 
     println!(
-        "Trying to find arbitrage between {okex_symbol} (Okex) and {deribit_symbol} (Deribit)"
+        "LET'S GOOO: Trying to find arbitrage between {okex_symbol} (Okex) and {deribit_symbol} (Deribit)"
     );
+
+    match InstrumentValidator::are_same_instrument(okex_symbol, deribit_symbol) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("Error: Instruments do not match!");
+            eprintln!("Okex: {okex_symbol}");
+            eprintln!("Deribit: {deribit_symbol}");
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("Failed to parse instruments: {e}");
+            return Ok(());
+        }
+    }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<OrderBookUpdate>();
 
-    let _ = tokio::spawn(okex_websocket_task(okex_symbol.into(), tx.clone()));
-    let _ = tokio::spawn(deribit_websocket_task(deribit_symbol.into(), tx.clone()));
+    tokio::spawn(okex_websocket_task(okex_symbol.into(), tx.clone()));
+    tokio::spawn(deribit_websocket_task(deribit_symbol.into(), tx.clone()));
 
     let mut books = HashMap::new();
     let mut last_fingerprint = None;
@@ -444,7 +461,7 @@ async fn main() -> Result<()> {
                 book.update_asks(levels);
             }
             OrderBookUpdate::ConnectionError { exchange, error } => {
-                eprintln!("Connection error from {}: {}", exchange, error);
+                eprintln!("Connection error from {exchange}: {error}");
             }
         }
 
