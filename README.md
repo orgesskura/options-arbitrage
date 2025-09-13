@@ -1,4 +1,4 @@
-# B2C2 Rust Arbitrage Exercise
+# Options Arbitrage Exercise
 
 This project connects to **Okex** and **Deribit** websockets, builds live order books, and detects arbitrage opportunities between the two exchanges for a given instrument.
 
